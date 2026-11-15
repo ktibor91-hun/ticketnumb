@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>Busz Nyilvántartó</title>
+<style>
+  :root {
+    --bg: #000000;
+    --card: #121212;
+    --text: #ffffff;
+    --muted: #888888;
+    --accent: #dc2626;
+    --accent-hover: #b91c1c;
+    --border: #262626;
+  }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--text); padding: 16px; max-width: 440px; margin-inline: auto; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  input {
+    width: 100%; padding: 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: #000000; color: var(--text); font-size: 1.15rem; margin-bottom: 10px;
+  }
+  input::placeholder { color: #666666; }
+  input:focus { outline: none; border-color: var(--accent); }
+  #searchInput { margin-bottom: 0; font-weight: 700; letter-spacing: 0.05em; }
+  .btn-primary {
+    width: 100%; padding: 14px; border: none; border-radius: 8px;
+    background: var(--accent); color: #ffffff; font-weight: 700; font-size: 1rem; cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+  .btn-primary:active { background: var(--accent-hover); }
+  .result-box { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; display: none; }
+  .list-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 2px; border-bottom: 1px solid var(--border);
+  }
+  .list-item:last-child { border-bottom: none; padding-bottom: 2px; }
+  .plate { font-weight: 800; font-size: 1.45rem; letter-spacing: 0.06em; color: #ffffff; }
+  .punch-val { font-size: 1.15rem; font-weight: 700; color: var(--accent); margin-top: 2px; }
+  .meta { font-size: 0.72rem; color: var(--muted); margin-top: 3px; }
+  .actions { display: flex; gap: 8px; }
+  .btn-edit {
+    background: #ffffff; border: none; color: #000000;
+    padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; font-weight: 700; cursor: pointer;
+  }
+  .btn-del {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 8px 10px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;
+  }
+  .status-bar { font-size: 0.8rem; color: #ffffff; text-align: center; margin-bottom: 10px; min-height: 18px; font-weight: 600; }
+  .footer-info { text-align: center; font-size: 0.72rem; color: #555555; margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<div class="status-bar" id="statusMsg">Kapcsolódás a Firebase-hez...</div>
+
+<!-- Kereső + Találatok -->
+<div class="card">
+  <input type="text" id="searchInput" inputmode="numeric" pattern="[0-9]*" placeholder="Keresés (rendszám száma)..." oninput="filterNumbers(this); renderSearch();">
+  <div class="result-box" id="resultBox"></div>
+</div>
+
+<!-- Felvitel / Frissítés -->
+<div class="card">
+  <input type="text" id="plateInput" inputmode="numeric" pattern="[0-9]*" placeholder="Rendszám száma" oninput="filterNumbers(this)">
+  <input type="text" id="punchInput" placeholder="Állás (pl. 1-3)">
+  <button class="btn-primary" onclick="saveBus()">Mentés / Frissítés</button>
+</div>
+
+<div class="footer-info" id="totalCount">0 rögzített adat a felhőben</div>
+
+<!-- Firebase Modul & Alkalmazás logika -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js";
+  import { getFirestore, collection, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDUI4QPmrCI5Ru95Rlb8P3wncp7pVepuys",
+    authDomain: "ticketnumber-ddc84.firebaseapp.com",
+    projectId: "ticketnumber-ddc84",
+    storageBucket: "ticketnumber-ddc84.firebasestorage.app",
+    messagingSenderId: "387807498234",
+    appId: "1:387807498234:web:477697b18277d30b9d5e43"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  let buses = [];
+
+  async function loadFromFirebase() {
+    try {
+      showStatus("Adatok betöltése...");
+      const querySnapshot = await getDocs(collection(db, "buszok"));
+      buses = [];
+      querySnapshot.forEach((docSnap) => {
+        buses.push(docSnap.data());
+      });
+      buses.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      updateCount();
+      renderSearch();
+      showStatus("Szinkronizálva a felhővel");
+    } catch (error) {
+      console.error("Hiba az adatok betöltésekor: ", error);
+      showStatus("Hiba a betöltésnél!");
+    }
+  }
+
+  window.saveBus = async function() {
+    const plate = document.getElementById('plateInput').value.trim();
+    const punch = document.getElementById('punchInput').value.trim();
+
+    if (!plate || !punch) return showStatus('Töltsd ki mindkét mezőt!');
+
+    const now = new Date().toLocaleDateString('hu-HU', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const entry = { plate, punch, updated: now, ts: Date.now() };
+
+    try {
+      showStatus("Mentés a felhőbe...");
+      await setDoc(doc(db, "buszok", plate), entry);
+
+      const existingIdx = buses.findIndex(b => b.plate === plate);
+      if (existingIdx > -1) {
+        buses[existingIdx] = entry;
+      } else {
+        buses.unshift(entry);
+      }
+
+      updateCount();
+      document.getElementById('plateInput').value = '';
+      document.getElementById('punchInput').value = '';
+      document.getElementById('searchInput').value = '';
+      renderSearch();
+      showStatus(`${plate} sikeresen mentve!`);
+    } catch (error) {
+      console.error("Mentési hiba: ", error);
+      showStatus("Hiba történt a mentés során!");
+    }
+  };
+
+  window.deleteBus = async function(plate) {
+    if (!confirm(`Törlöd: ${plate}?`)) return;
+    try {
+      await deleteDoc(doc(db, "buszok", plate));
+      buses = buses.filter(b => b.plate !== plate);
+      updateCount();
+      renderSearch();
+      showStatus(`${plate} törölve`);
+    } catch (error) {
+      console.error("Törlési hiba: ", error);
+      showStatus("Nem sikerült törölni!");
+    }
+  };
+
+  window.editBus = function(plate) {
+    const bus = buses.find(b => b.plate === plate);
+    if (!bus) return;
+    document.getElementById('plateInput').value = bus.plate;
+    document.getElementById('punchInput').value = bus.punch;
+    document.getElementById('punchInput').focus();
+  };
+
+  window.renderSearch = function() {
+    const q = document.getElementById('searchInput').value.trim();
+    const box = document.getElementById('resultBox');
+
+    if (!q) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+
+    box.style.display = 'block';
+    const filtered = buses.filter(b => b.plate.includes(q));
+
+    if (filtered.length === 0) {
+      box.innerHTML = `<div style="padding:10px 0; text-align:center; color:var(--muted); font-size:0.9rem;">Nincs találat</div>`;
+      return;
+    }
+
+    box.innerHTML = filtered.map(b => `
+      <div class="list-item">
+        <div>
+          <div class="plate">${b.plate}</div>
+          <div class="punch-val">${escapeHtml(b.punch)}</div>
+          <div class="meta">${b.updated}</div>
+        </div>
+        <div class="actions">
+          <button class="btn-edit" onclick="editBus('${b.plate}')">Frissít</button>
+          <button class="btn-del" onclick="deleteBus('${b.plate}')">✕</button>
+        </div>
+      </div>
+    `).join('');
+  };
+
+  function updateCount() {
+    document.getElementById('totalCount').textContent = `${buses.length} rögzített adat a felhőben`;
+  }
+
+  function showStatus(msg) {
+    const el = document.getElementById('statusMsg');
+    el.textContent = msg;
+    setTimeout(() => { 
+      if (el.textContent === msg) el.textContent = ''; 
+    }, 3000);
+  }
+
+    window.filterNumbers = function(el) {
+    el.value = el.value.replace(/\D/g, '');
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/[&<>"']/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m]));
+  }
+
+  loadFromFirebase();
+</script>
+
+</body>
+</html>
