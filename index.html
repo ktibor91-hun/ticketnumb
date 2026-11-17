@@ -4,15 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 
-<!-- Egyedi név a Főképernyőn -->
-<meta name="apple-mobile-web-app-title" content="Lyukasztó állás">
-
-<!-- Egyedi ikon (itt egy menetjegy emojit / kis képet használunk alapként, vagy megadhatsz saját képet is) -->
+<!-- iPhone Főképernyő beállítások -->
+<meta name="apple-mobile-web-app-title" content="Buszok">
 <link rel="apple-touch-icon" href="jegy_1.png">
 
-<title>Lyukaszztó állás</title>
+<title>Busz Nyilvántartó</title>
 <style>
   :root {
     --bg: #000000;
@@ -58,7 +57,16 @@
     padding: 8px 10px; border-radius: 6px; font-size: 0.85rem; cursor: pointer;
   }
   .status-bar { font-size: 0.8rem; color: #ffffff; text-align: center; margin-bottom: 10px; min-height: 18px; font-weight: 600; }
-  .footer-info { text-align: center; font-size: 0.72rem; color: #555555; margin-top: 14px; }
+  .footer-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 14px; padding: 0 4px;
+  }
+  .footer-info { font-size: 0.75rem; color: #666666; }
+  .btn-sync {
+    background: var(--card); border: 1px solid var(--border); color: #ffffff;
+    padding: 6px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  }
+  .btn-sync:active { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -74,16 +82,20 @@
 <!-- Felvitel / Frissítés -->
 <div class="card">
   <input type="text" id="plateInput" inputmode="numeric" pattern="[0-9]*" placeholder="Rendszám száma" oninput="filterNumbers(this)">
-  <input type="text" id="punchInput" placeholder="Állás">
+  <input type="text" id="punchInput" inputmode="numeric" pattern="[0-9]*" placeholder="Állás (csak szám)" oninput="filterNumbers(this)">
   <button class="btn-primary" onclick="saveBus()">Mentés / Frissítés</button>
 </div>
 
-<div class="footer-info" id="totalCount">0 rögzített adat a felhőben</div>
+<!-- Alsó sáv: darabszám + kézi adatbázis frissítés -->
+<div class="footer-bar">
+  <div class="footer-info" id="totalCount">0 rögzített adat</div>
+  <button class="btn-sync" onclick="manualRefresh()">↻ Frissítés</button>
+</div>
 
 <!-- Firebase Modul & Alkalmazás logika -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js";
-  import { getFirestore, collection, getDocs, setDoc, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js";
+  import { getFirestore, collection, getDocs, setDoc, doc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDUI4QPmrCI5Ru95Rlb8P3wncp7pVepuys",
@@ -99,9 +111,27 @@
 
   let buses = [];
 
-  async function loadFromFirebase() {
+  // Automatikus valós idejű figyelés (azonnal frissül mindkettőtöknél)
+  function startRealtimeSync() {
+    onSnapshot(collection(db, "buszok"), (querySnapshot) => {
+      buses = [];
+      querySnapshot.forEach((docSnap) => {
+        buses.push(docSnap.data());
+      });
+      buses.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      updateCount();
+      renderSearch();
+      showStatus("Élő szinkronizálás aktív");
+    }, (error) => {
+      console.error("Szinkronizálási hiba: ", error);
+      showStatus("Kapcsolati hiba!");
+    });
+  }
+
+  // Kézi frissítés gomb funkciója
+  window.manualRefresh = async function() {
     try {
-      showStatus("Adatok betöltése...");
+      showStatus("Adatbázis frissítése...");
       const querySnapshot = await getDocs(collection(db, "buszok"));
       buses = [];
       querySnapshot.forEach((docSnap) => {
@@ -110,12 +140,12 @@
       buses.sort((a, b) => (b.ts || 0) - (a.ts || 0));
       updateCount();
       renderSearch();
-      showStatus("Szinkronizálva a felhővel");
+      showStatus("Adatbázis frissítve!");
     } catch (error) {
-      console.error("Hiba az adatok betöltésekor: ", error);
-      showStatus("Hiba a betöltésnél!");
+      console.error("Frissítési hiba: ", error);
+      showStatus("Nem sikerült frissíteni!");
     }
-  }
+  };
 
   window.saveBus = async function() {
     const plate = document.getElementById('plateInput').value.trim();
@@ -130,14 +160,6 @@
       showStatus("Mentés a felhőbe...");
       await setDoc(doc(db, "buszok", plate), entry);
 
-      const existingIdx = buses.findIndex(b => b.plate === plate);
-      if (existingIdx > -1) {
-        buses[existingIdx] = entry;
-      } else {
-        buses.unshift(entry);
-      }
-
-      updateCount();
       document.getElementById('plateInput').value = '';
       document.getElementById('punchInput').value = '';
       document.getElementById('searchInput').value = '';
@@ -153,9 +175,6 @@
     if (!confirm(`Törlöd: ${plate}?`)) return;
     try {
       await deleteDoc(doc(db, "buszok", plate));
-      buses = buses.filter(b => b.plate !== plate);
-      updateCount();
-      renderSearch();
       showStatus(`${plate} törölve`);
     } catch (error) {
       console.error("Törlési hiba: ", error);
@@ -205,7 +224,7 @@
   };
 
   function updateCount() {
-    document.getElementById('totalCount').textContent = `${buses.length} rögzített adat a felhőben`;
+    document.getElementById('totalCount').textContent = `${buses.length} rögzített adat`;
   }
 
   function showStatus(msg) {
@@ -216,7 +235,7 @@
     }, 3000);
   }
 
-    window.filterNumbers = function(el) {
+  window.filterNumbers = function(el) {
     el.value = el.value.replace(/\D/g, '');
   }
 
@@ -224,7 +243,7 @@
     return str.replace(/[&<>"']/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[m]));
   }
 
-  loadFromFirebase();
+  startRealtimeSync();
 </script>
 
 </body>
